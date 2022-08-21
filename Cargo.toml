@@ -1,0 +1,41 @@
+[package]
+name = "loggerino"
+version = "0.1.0"
+edition = "2021"
+authors = ["vyneer <vyn33r@gmail.com>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+fancy-regex = "0.10"
+tokio-tungstenite = { version = "*", features = ["rustls-tls-webpki-roots"] }
+url = "2.1"
+log = "0.4"
+env_logger = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+time = { version = "0.3", features = ["std", "parsing", "macros"] }
+tokio-postgres = "0.7"
+dotenv = "*"
+rust_decimal = { version = "1.12", features = ["db-postgres", "db-tokio-postgres"]}
+reqwest = { version = "0.11", default-features = false, features = ["blocking", "json", "rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["full"] }
+futures-util = "*"
+futures-channel = "*"
+ctrlc = { version = "3.0", features = ["termination"] }
+crossbeam-channel = "0.5"
+rusqlite = { version = "0.27.0", features = ["bundled"] }
+twitch_oauth2 = "0.6.1"
+twitch_api2 = { version = "0.6.1", features = ["helix", "client", "reqwest"] }
+lazy_static = "1.4.0"
+tonic = "0.8"
+prost = "0.11"
+prost-types = "0.11"
+
+[build-dependencies]
+tonic-build = "0.8"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 1  # Optimize for speed.

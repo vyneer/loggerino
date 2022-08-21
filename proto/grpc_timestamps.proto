@@ -1,0 +1,52 @@
+syntax = "proto3";
+import "google/protobuf/timestamp.proto";
+package grpc_timestamps;
+option go_package = "proto/";
+
+message Phrase {
+	google.protobuf.Timestamp time = 1;
+	string username = 2;
+	string phrase = 3;
+	string duration = 4;
+	string type = 5;
+}
+
+message RemovePhrase {
+	google.protobuf.Timestamp time = 1;
+	string phrase = 2;
+}
+
+message Nuke {
+	google.protobuf.Timestamp time = 1;
+	string type = 2;
+	string duration = 3;
+	string word = 4;
+}
+
+enum AegisType {
+	NORMAL = 0;
+	SINGLE = 1;
+}
+
+message Aegis {
+	google.protobuf.Timestamp time = 1;
+	AegisType type = 2;
+	string word = 3;
+}
+
+message Mutelinks {
+	google.protobuf.Timestamp time = 1;
+	string status = 2;
+	string duration = 3;
+	string user = 4;
+}
+
+message Empty {}
+
+service Status {
+	rpc ReceiveRemovePhrase(RemovePhrase) returns (Empty) {}
+	rpc ReceivePhrase(Phrase) returns (Empty) {}
+	rpc ReceiveNuke(Nuke) returns (Empty) {}
+	rpc ReceiveAegis(Aegis) returns (Empty) {}
+	rpc ReceiveMutelinks(Mutelinks) returns (Empty) {}
+} 
