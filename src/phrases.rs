@@ -1,11 +1,20 @@
+#![warn(clippy::pedantic, clippy::nursery)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    clippy::match_wild_err_arm,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
+
 use crossbeam_channel::{Receiver, Sender};
 use fancy_regex::Regex;
 use futures_util::{future, pin_mut, StreamExt};
+use lazy_static::lazy_static;
 use log::{debug, error, info};
 use reqwest::Client;
 use rust_decimal::prelude::{Decimal, ToPrimitive};
 use serde::Deserialize;
-use tonic::transport::Channel;
 use std::{
     fs::File,
     io::{prelude::*, BufReader},
@@ -20,21 +29,19 @@ use time::{format_description::well_known::Rfc3339, PrimitiveDateTime};
 use tokio::time::timeout;
 use tokio_postgres::{connect, NoTls};
 use tokio_tungstenite::{connect_async, tungstenite::Message::Pong};
+use tonic::transport::Channel;
 use url::Url;
-use lazy_static::lazy_static;
 
-use crate::util::{rem_first_and_last, split_once, Message, TimeoutMsg};
-use grpc::status_client::StatusClient;
-use grpc::{RemovePhrase, Phrase};
-
-pub mod grpc {
-    tonic::include_proto!("grpc_timestamps");
-}
+use crate::util::{
+    grpc::{status_client::StatusClient, Phrase, RemovePhrase},
+    rem_first_and_last, split_once, Message, TimeoutMsg,
+};
 
 lazy_static! {
     static ref TIME_REGEX: Regex = Regex::new(r"(\d+[HMDSWwhmds])?\s?(.*)").unwrap();
     static ref PARAM_REGEX: Regex = Regex::new(r"(.*)").unwrap();
-    static ref MUTE_REGEX: Regex = Regex::new(r"(.*) (muted|banned) for using banned phrase\((.*)\)").unwrap();
+    static ref MUTE_REGEX: Regex =
+        Regex::new(r"(.*) (muted|banned) for using banned phrase\((.*)\)").unwrap();
 }
 
 #[derive(Deserialize, Debug)]
@@ -72,39 +79,42 @@ async fn websocket_thread_func(
     timer_tx: Sender<TimeoutMsg>,
     ctrlc_inner_rx: Receiver<()>,
     ctrlc_outer_tx: Sender<()>,
-    grpc_params: String
+    grpc_params: String,
 ) {
     let mut io_error_counter = 0;
 
     let mut grpc_client: Option<StatusClient<Channel>>;
-    if !grpc_params.is_empty() {
-        grpc_client = Some(StatusClient::connect(grpc_params).await.unwrap());
-    } else {
+    if grpc_params.is_empty() {
         grpc_client = None;
+    } else {
+        grpc_client = Some(StatusClient::connect(grpc_params).await.unwrap());
     }
 
     'ioerrortracker: loop {
         if io_error_counter > 3 {
             let io_error_sleep = io_error_counter - 3;
-            debug!("Too many IO errors in a row ({}), sleeping before connecting", io_error_counter);
+            debug!(
+                "Too many IO errors in a row ({}), sleeping before connecting",
+                io_error_counter
+            );
             thread::sleep(Duration::from_secs(io_error_sleep));
         }
         let mut phrases: Vec<String> = Vec::new();
         let mut user_checks: Vec<Status> = Vec::new();
-    
+
         // since we can't move a pg connection from one thread to another easily
         // we just recreate it
         let (conn, conn2) = connect(params.as_str(), NoTls).await.unwrap();
-    
+
         let timer_tx_pg_error = timer_tx.clone();
-    
+
         tokio::spawn(async move {
             if let Err(e) = conn2.await {
                 error!("Postgres connection error: {}", e);
                 timer_tx_pg_error.send(TimeoutMsg::Shutdown).unwrap();
             }
         });
-    
+
         for row in conn
             .query("SELECT phrase FROM phrases ORDER by time DESC", &[])
             .await
@@ -112,11 +122,11 @@ async fn websocket_thread_func(
         {
             phrases.push(row.get("phrase"));
         }
-    
+
         phrases = phrases.into_iter().map(|f| f.to_lowercase()).collect();
-    
+
         let ws = connect_async(Url::parse("wss://chat.destiny.gg/ws").unwrap());
-    
+
         let (socket, response) = match timeout(Duration::from_secs(10), ws).await {
             Ok(ws) => {
                 let (socket, response) = match ws {
@@ -137,14 +147,14 @@ async fn websocket_thread_func(
                 panic!("Connection timed out, restarting the thread: {}", e);
             }
         };
-    
+
         info!("Connected to the server");
         debug!("Response HTTP code: {}", response.status());
-    
+
         let (stdin_tx, stdin_rx) = futures_channel::mpsc::unbounded();
-    
+
         let (write, mut read) = socket.split();
-    
+
         let stdin_to_ws = stdin_rx.map(Ok).forward(write);
         let ws_to_stdout = {
             while let Some(msg) = read.next().await {
@@ -154,7 +164,7 @@ async fn websocket_thread_func(
                             io_error_counter = 0;
                         }
                         msg_og
-                    },
+                    }
                     Err(tokio_tungstenite::tungstenite::Error::Io(e)) => {
                         error!("Tungstenite IO error, restarting the loop: {}", e);
                         io_error_counter += 1;
@@ -207,7 +217,10 @@ async fn websocket_thread_func(
                                         match grpc_client.as_mut() {
                                             Some(grpc_client) => {
                                                 let stamp_secs = msg_des.timestamp / 1000;
-                                                let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
+                                                let stamp_micros = ((msg_des.timestamp % 1000)
+                                                    * 1_000_000)
+                                                    .to_i32()
+                                                    .unwrap();
                                                 let stamp = prost_types::Timestamp {
                                                     seconds: stamp_secs,
                                                     nanos: stamp_micros,
@@ -217,11 +230,14 @@ async fn websocket_thread_func(
                                                     username: msg_des.nick.clone(),
                                                     phrase: phrase.clone(),
                                                     duration: duration.to_string(),
-                                                    r#type: "ban".to_string()
+                                                    r#type: "ban".to_string(),
                                                 });
                                                 debug!("Sending a gRPC new phrase event to the API server - | [{}] {}: {} {} for {} |", stamp, msg_des.nick.clone(), "Ban".to_string(), phrase, duration);
-                                                grpc_client.receive_phrase(phrase_request).await.unwrap();
-                                            },
+                                                grpc_client
+                                                    .receive_phrase(phrase_request)
+                                                    .await
+                                                    .unwrap();
+                                            }
                                             None => (),
                                         }
                                     }
@@ -245,7 +261,10 @@ async fn websocket_thread_func(
                                         match grpc_client.as_mut() {
                                             Some(grpc_client) => {
                                                 let stamp_secs = msg_des.timestamp / 1000;
-                                                let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
+                                                let stamp_micros = ((msg_des.timestamp % 1000)
+                                                    * 1_000_000)
+                                                    .to_i32()
+                                                    .unwrap();
                                                 let stamp = prost_types::Timestamp {
                                                     seconds: stamp_secs,
                                                     nanos: stamp_micros,
@@ -255,11 +274,14 @@ async fn websocket_thread_func(
                                                     username: msg_des.nick.clone(),
                                                     phrase: phrase.clone(),
                                                     duration: duration.to_string(),
-                                                    r#type: "mute".to_string()
+                                                    r#type: "mute".to_string(),
                                                 });
                                                 debug!("Sending a gRPC new phrase event to the API server - | [{}] {}: {} {} for {} |", stamp, msg_des.nick.clone(), "Mute".to_string(), phrase, duration);
-                                                grpc_client.receive_phrase(phrase_request).await.unwrap();
-                                            },
+                                                grpc_client
+                                                    .receive_phrase(phrase_request)
+                                                    .await
+                                                    .unwrap();
+                                            }
                                             None => (),
                                         }
                                     }
@@ -269,40 +291,51 @@ async fn websocket_thread_func(
                                 || command == "!dban"
                                 || command == "!deletemute"
                                 || command == "!dmute")
-                                && !params.is_empty() {
-                                    let phrase = params.to_lowercase();
-                                    match phrases.iter().position(|x| *x == phrase) {
-                                        Some(i) => {
-                                            conn.execute(
-                                                "DELETE FROM phrases WHERE lower(phrase) = $1",
-                                                &[&phrase],
-                                            )
-                                            .await
-                                            .unwrap();
-                                            phrases.remove(i);
-                                            debug!("Deleted a phrase from db: {:?}", msg_des);
-                                            match grpc_client.as_mut() {
-                                                Some(grpc_client) => {
-                                                    let stamp_secs = msg_des.timestamp / 1000;
-                                                    let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
-                                                    let stamp = prost_types::Timestamp {
-                                                        seconds: stamp_secs,
-                                                        nanos: stamp_micros,
-                                                    };
-                                                    let phrase_request = tonic::Request::new(RemovePhrase {
+                                && !params.is_empty()
+                            {
+                                let phrase = params.to_lowercase();
+                                match phrases.iter().position(|x| *x == phrase) {
+                                    Some(i) => {
+                                        conn.execute(
+                                            "DELETE FROM phrases WHERE lower(phrase) = $1",
+                                            &[&phrase],
+                                        )
+                                        .await
+                                        .unwrap();
+                                        phrases.remove(i);
+                                        debug!("Deleted a phrase from db: {:?}", msg_des);
+                                        match grpc_client.as_mut() {
+                                            Some(grpc_client) => {
+                                                let stamp_secs = msg_des.timestamp / 1000;
+                                                let stamp_micros = ((msg_des.timestamp % 1000)
+                                                    * 1_000_000)
+                                                    .to_i32()
+                                                    .unwrap();
+                                                let stamp = prost_types::Timestamp {
+                                                    seconds: stamp_secs,
+                                                    nanos: stamp_micros,
+                                                };
+                                                let phrase_request =
+                                                    tonic::Request::new(RemovePhrase {
                                                         time: Some(stamp.clone()),
                                                         phrase: phrase.clone(),
                                                     });
-                                                    debug!("Sending a gRPC phrase removal event to the API server - | [{}] {}: {} |", stamp, msg_des.nick.clone(), phrase);
-                                                    grpc_client.receive_remove_phrase(phrase_request).await.unwrap();
-                                                },
-                                                None => (),
+                                                debug!("Sending a gRPC phrase removal event to the API server - | [{}] {}: {} |", stamp, msg_des.nick.clone(), phrase);
+                                                grpc_client
+                                                    .receive_remove_phrase(phrase_request)
+                                                    .await
+                                                    .unwrap();
                                             }
-                                        }
-                                        None => {
-                                            debug!("Doesn't seem like the phrase is banned/muted: {:?}", msg_des);
+                                            None => (),
                                         }
                                     }
+                                    None => {
+                                        debug!(
+                                            "Doesn't seem like the phrase is banned/muted: {:?}",
+                                            msg_des
+                                        );
+                                    }
+                                }
                             }
                         }
                         // OKAY here's how this works
@@ -314,17 +347,22 @@ async fn websocket_thread_func(
                             .filter_map(|f| {
                                 // if message doesnt come from an admin, mod, vip, a protected person, a bot or a community bot (flair11)
                                 if !msg_des.features.contains(&"admin".to_string())
-                                && !msg_des.features.contains(&"moderator".to_string())
-                                && !msg_des.features.contains(&"vip".to_string())
-                                && !msg_des.features.contains(&"protected".to_string())
-                                && !msg_des.features.contains(&"bot".to_string())
-                                && !msg_des.features.contains(&"flair11".to_string()) {
+                                    && !msg_des.features.contains(&"moderator".to_string())
+                                    && !msg_des.features.contains(&"vip".to_string())
+                                    && !msg_des.features.contains(&"protected".to_string())
+                                    && !msg_des.features.contains(&"bot".to_string())
+                                    && !msg_des.features.contains(&"flair11".to_string())
+                                {
                                     // if phrase is a regex, dont treat it like a regular phrase
                                     if f.starts_with('/') && f.ends_with('/') {
                                         // if regex matches lowercase data, add it to the vector
-                                        if Regex::new(rem_first_and_last(&f.replace("\\/", "/").replace("\\\\", "\\")))
+                                        if Regex::new(rem_first_and_last(
+                                            &f.replace("\\/", "/").replace("\\\\", "\\"),
+                                        ))
                                         .unwrap()
-                                        .is_match(&lc_data).unwrap() {
+                                        .is_match(&lc_data)
+                                        .unwrap()
+                                        {
                                             Some(f)
                                         } else {
                                             None
@@ -351,11 +389,12 @@ async fn websocket_thread_func(
                                         capt.get(1).map_or("", |m| m.as_str()).to_string();
                                     let phrase =
                                         capt.get(3).map_or("", |m| m.as_str()).to_lowercase();
-                                    let typ_uc = if capt.get(2).map_or("", |m| m.as_str()) == "muted" {
-                                        "Mute".to_string()
-                                    } else {
-                                        "Ban".to_string()
-                                    };
+                                    let typ_uc =
+                                        if capt.get(2).map_or("", |m| m.as_str()) == "muted" {
+                                            "Mute".to_string()
+                                        } else {
+                                            "Ban".to_string()
+                                        };
                                     let typ = typ_uc.to_lowercase();
                                     // if the phrase is NOT on the current list
                                     // and it's NOT ignored
@@ -372,7 +411,10 @@ async fn websocket_thread_func(
                                         match grpc_client.as_mut() {
                                             Some(grpc_client) => {
                                                 let stamp_secs = msg_des.timestamp / 1000;
-                                                let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
+                                                let stamp_micros = ((msg_des.timestamp % 1000)
+                                                    * 1_000_000)
+                                                    .to_i32()
+                                                    .unwrap();
                                                 let stamp = prost_types::Timestamp {
                                                     seconds: stamp_secs,
                                                     nanos: stamp_micros,
@@ -382,11 +424,14 @@ async fn websocket_thread_func(
                                                     username: "bot_detection".to_string(),
                                                     phrase: phrase.clone(),
                                                     duration: "10m".to_string(),
-                                                    r#type: typ
+                                                    r#type: typ,
                                                 });
                                                 debug!("Sending a gRPC new phrase event to the API server - | [{}] {}: {} {} for {} |", stamp, "bot_detection", typ_uc, phrase, "10m");
-                                                grpc_client.receive_phrase(phrase_request).await.unwrap();
-                                            },
+                                                grpc_client
+                                                    .receive_phrase(phrase_request)
+                                                    .await
+                                                    .unwrap();
+                                            }
                                             None => (),
                                         }
                                     }
@@ -417,18 +462,25 @@ async fn websocket_thread_func(
                                     match grpc_client.as_mut() {
                                         Some(grpc_client) => {
                                             let stamp_secs = msg_des.timestamp / 1000;
-                                            let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
+                                            let stamp_micros = ((msg_des.timestamp % 1000)
+                                                * 1_000_000)
+                                                .to_i32()
+                                                .unwrap();
                                             let stamp = prost_types::Timestamp {
                                                 seconds: stamp_secs,
                                                 nanos: stamp_micros,
                                             };
-                                            let phrase_request = tonic::Request::new(RemovePhrase {
-                                                time: Some(stamp.clone()),
-                                                phrase: check.data.clone(),
-                                            });
+                                            let phrase_request =
+                                                tonic::Request::new(RemovePhrase {
+                                                    time: Some(stamp.clone()),
+                                                    phrase: check.data.clone(),
+                                                });
                                             debug!("Sending a gRPC phrase removal event to the API server - | [{}] {}: {} |", stamp, check.nick, check.data);
-                                            grpc_client.receive_remove_phrase(phrase_request).await.unwrap();
-                                        },
+                                            grpc_client
+                                                .receive_remove_phrase(phrase_request)
+                                                .await
+                                                .unwrap();
+                                        }
                                         None => (),
                                     }
                                     user_checks.remove(
@@ -453,12 +505,12 @@ async fn websocket_thread_func(
                 }
                 if msg_og.is_close() {
                     error!("Server closed the connection, restarting the loop");
-                    continue 'ioerrortracker
+                    continue 'ioerrortracker;
                 }
             }
             read.into_future()
         };
-    
+
         pin_mut!(stdin_to_ws, ws_to_stdout);
         future::select(stdin_to_ws, ws_to_stdout).await;
     }
@@ -530,19 +582,25 @@ pub async fn main_loop(params: String, grpc_params: String, ctrlc_inner: Receive
         }
     }
 
+    let mut bm_vec: Vec<String> = vec![];
+
     // ignore the phrases from banned_memes.txt
-    let file = File::open("banned_memes.txt").expect("no such file");
-    let buf = BufReader::new(file);
-    let bm_vec = buf
-        .lines()
-        .map(|l| l.expect("Could not parse line"))
-        .map(|s| s.to_lowercase())
-        .collect::<Vec<String>>();
-    for entry in &bm_vec {
-        conn.execute("DELETE FROM phrases where lower(phrase) = $1", &[&entry])
-            .await
-            .unwrap();
-        debug!("Deleted a banned meme phrase from db: {:?}", entry);
+    match File::open("banned_memes.txt") {
+        Ok(file) => {
+            let buf = BufReader::new(file);
+            bm_vec = buf
+                .lines()
+                .map(|l| l.expect("Could not parse line"))
+                .map(|s| s.to_lowercase())
+                .collect::<Vec<String>>();
+            for entry in &bm_vec {
+                conn.execute("DELETE FROM phrases where lower(phrase) = $1", &[&entry])
+                    .await
+                    .unwrap();
+                debug!("Deleted a banned meme phrase from db: {:?}", entry);
+            }
+        }
+        Err(e) => error!("No banned_memes.txt file found, skipping the step - {}", e),
     }
 
     handle.abort();
@@ -627,8 +685,9 @@ pub async fn main_loop(params: String, grpc_params: String, ctrlc_inner: Receive
         if timeout_thread.join().is_err() {
             match sleep_timer.load(Ordering::Acquire) {
                 0 => sleep_timer.store(1, Ordering::Release),
-                1..=32 => sleep_timer
-                    .store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release),
+                1..=32 => {
+                    sleep_timer.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release)
+                }
                 _ => {}
             }
             continue 'outer;
@@ -636,8 +695,9 @@ pub async fn main_loop(params: String, grpc_params: String, ctrlc_inner: Receive
         if ws_thread.join().is_err() {
             match sleep_timer.load(Ordering::Acquire) {
                 0 => sleep_timer.store(1, Ordering::Release),
-                1..=32 => sleep_timer
-                    .store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release),
+                1..=32 => {
+                    sleep_timer.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release)
+                }
                 _ => {}
             }
             continue 'outer;

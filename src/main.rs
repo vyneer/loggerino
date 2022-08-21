@@ -1,11 +1,3 @@
-#![warn(clippy::pedantic)]
-#![warn(clippy::nursery)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::match_wild_err_arm)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::too_many_arguments)]
-
 use env_logger::Env;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -44,19 +36,25 @@ async fn main() {
             _ => panic!("Please set the GRPC_STATUS env correctly."),
         })
         .unwrap();
-    let mut grpc_params = String::new();
-    if grpc_status {
-        grpc_params = format!(
-            "http://{}:{}",
-            env::var("GRPC_HOST").unwrap().as_str(),
-            env::var("GRPC_PORT").unwrap().as_str()
-        );
-    }
+    let grpc_params = if grpc_status {
+        {
+            format!(
+                "http://{}:{}",
+                env::var("GRPC_HOST").unwrap().as_str(),
+                env::var("GRPC_PORT").unwrap().as_str()
+            )
+        }
+    } else {
+        String::new()
+    };
 
-    env_logger::Builder::from_env(
-        Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, 
-            format!("{},hyper=info,h2=info,rustls=info,tokio_postgres=info", log_level)),
-    )
+    env_logger::Builder::from_env(Env::default().filter_or(
+        env_logger::DEFAULT_FILTER_ENV,
+        format!(
+            "{},hyper=info,h2=info,rustls=info,tokio_postgres=info",
+            log_level
+        ),
+    ))
     .format_timestamp_millis()
     .init();
 
@@ -77,25 +75,28 @@ async fn main() {
         crossbeam_channel::unbounded();
     let (ctrlc_embeds_tx, ctrlc_embeds_rx): (Sender<()>, Receiver<()>) =
         crossbeam_channel::unbounded();
-    let (ctrlc_main_tx, ctrlc_main_rx): (Sender<()>, Receiver<()>) =
-        crossbeam_channel::unbounded();
+    let (ctrlc_main_tx, ctrlc_main_rx): (Sender<()>, Receiver<()>) = crossbeam_channel::unbounded();
 
     let mut sleep_timer = 0;
 
     ctrlc::set_handler(move || {
         info!("Ctrl-C received, shutting down...");
-        if ctrlc_logger_tx.send(()).is_err() {
-            panic!("Couldn't shutdown the logger");
-        }
-        if ctrlc_phrases_tx.send(()).is_err() {
-            panic!("Couldn't shutdown the phrases collector");
-        }
-        if ctrlc_embeds_tx.send(()).is_err() {
-            panic!("Couldn't shutdown the embeds collector");
-        }
-        if ctrlc_main_tx.send(()).is_err() {
-            panic!("Couldn't shutdown the main thread");
-        }
+        assert!(
+            ctrlc_logger_tx.send(()).is_ok(),
+            "Couldn't shutdown the logger"
+        );
+        assert!(
+            ctrlc_phrases_tx.send(()).is_ok(),
+            "Couldn't shutdown the phrases collector"
+        );
+        assert!(
+            ctrlc_embeds_tx.send(()).is_ok(),
+            "Couldn't shutdown the embeds collector"
+        );
+        assert!(
+            ctrlc_main_tx.send(()).is_ok(),
+            "Couldn't shutdown the main thread"
+        );
     })
     .expect("Error setting Ctrl-C handler");
 
@@ -127,9 +128,17 @@ async fn main() {
         let ctrlc_phrases_rx_inner = ctrlc_phrases_rx.clone();
         let ctrlc_embeds_rx_inner = ctrlc_embeds_rx.clone();
 
-        let logger_main = tokio::task::spawn_blocking(move || logger::main_loop(params_inner, grpc_params_inner, ctrlc_logger_rx_inner));
+        let logger_main = tokio::task::spawn_blocking(move || {
+            logger::main_loop(params_inner, grpc_params_inner, ctrlc_logger_rx_inner)
+        });
         thread::sleep(Duration::from_secs(4));
-        let phrases_main = tokio::task::spawn_blocking(move || phrases::main_loop(params_inner_clone, grpc_params_inner_clone, ctrlc_phrases_rx_inner));
+        let phrases_main = tokio::task::spawn_blocking(move || {
+            phrases::main_loop(
+                params_inner_clone,
+                grpc_params_inner_clone,
+                ctrlc_phrases_rx_inner,
+            )
+        });
         thread::sleep(Duration::from_secs(4));
         let embeds_main = tokio::task::spawn_blocking(move || {
             embeds::main_loop(
@@ -143,7 +152,7 @@ async fn main() {
             logger_main.abort();
             break 'inner;
         }
-    
+
         if logger_main.await.is_err() {
             match sleep_timer {
                 0 => sleep_timer = 1,

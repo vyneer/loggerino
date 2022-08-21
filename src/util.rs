@@ -1,10 +1,18 @@
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_possible_truncation)]
+
 use serde::{Deserialize, Serialize};
-use time::{Duration, UtcOffset, PrimitiveDateTime, macros::{date, time}, OffsetDateTime, error::ComponentRange};
-use std::{
-    error::Error, fmt::Display, str::FromStr, string::ToString
+use std::{error::Error, fmt::Display, str::FromStr, string::ToString};
+use time::{
+    error::ComponentRange,
+    macros::{date, time},
+    Duration, OffsetDateTime, PrimitiveDateTime, UtcOffset,
 };
 
-static INITIAL_TIMESTAMP: PrimitiveDateTime = PrimitiveDateTime::new(date!(0001-01-01), time!(0:00));
+static INITIAL_TIMESTAMP: PrimitiveDateTime =
+    PrimitiveDateTime::new(date!(0001 - 01 - 01), time!(0:00));
 
 const NUKE_COMMANDS: [&str; 1] = ["!nuke"];
 const MEGANUKE_COMMANDS: [&str; 1] = ["!meganuke"];
@@ -12,6 +20,12 @@ const AEGIS_COMMANDS: [&str; 1] = ["!aegis"];
 const AEGISSINGLE_COMMANDS: [&str; 4] = ["!aegissingle", "!an", "!unnuke", "!as"];
 const MUTELINKS_COMMANDS: [&str; 4] = ["!mutelinks", "!mutelink", "!linkmute", "!linksmute"];
 const BREAKINGNEWS_COMMANDS: [&str; 3] = ["!breakingnews", "!breaking", "!bn"];
+
+pub mod grpc {
+    #![allow(clippy::all)]
+
+    tonic::include_proto!("grpc_timestamps");
+}
 
 pub enum TimeoutMsg {
     Ok,
@@ -202,7 +216,7 @@ pub fn convert_time_to_vec(time: OffsetDateTime) -> Result<Vec<u8>, TimeConversi
 
         offset /= 60;
         if offset < -32768 || offset == -1 || offset > 32767 {
-            return Err(TimeConversionError::UnexpectedOffset)
+            return Err(TimeConversionError::UnexpectedOffset);
         }
         offset_min = offset as i16;
     }
@@ -230,13 +244,13 @@ pub fn convert_time_to_vec(time: OffsetDateTime) -> Result<Vec<u8>, TimeConversi
         enc.push(offset_sec as u8);
     }
 
-    return Ok(enc)
+    Ok(enc)
 }
 
 #[allow(dead_code)]
 pub fn convert_vec_to_time(time_vec: Vec<u8>) -> Result<OffsetDateTime, TimeConversionError> {
     if time_vec.is_empty() {
-        return Err(TimeConversionError::NoData)
+        return Err(TimeConversionError::NoData);
     }
 
     let version = time_vec[0];
@@ -245,30 +259,41 @@ pub fn convert_vec_to_time(time_vec: Vec<u8>) -> Result<OffsetDateTime, TimeConv
     match version {
         1 => (),
         2 => desired_length += 1,
-        _ => return Err(TimeConversionError::WrongVersion)
+        _ => return Err(TimeConversionError::WrongVersion),
     }
 
     if time_vec.len() != desired_length {
-        return Err(TimeConversionError::InvalidLength)
+        return Err(TimeConversionError::InvalidLength);
     }
 
-    let sec = (i64::from(time_vec[8])) | (i64::from(time_vec[7]))<<8 | (i64::from(time_vec[6]))<<16 | (i64::from(time_vec[5]))<<24 
-                    | (i64::from(time_vec[4]))<<32 | (i64::from(time_vec[3]))<<40 | (i64::from(time_vec[2]))<<48 | (i64::from(time_vec[1]))<<56;
-    let nsec = (i32::from(time_vec[12])) | (i32::from(time_vec[11]))<<8 | (i32::from(time_vec[10]))<<16 | (i32::from(time_vec[9]))<<24;
-    let mut offset = i32::from(i16::from(time_vec[14]) | (i16::from(time_vec[13]))<<8) * 60;
+    let sec = (i64::from(time_vec[8]))
+        | (i64::from(time_vec[7])) << 8
+        | (i64::from(time_vec[6])) << 16
+        | (i64::from(time_vec[5])) << 24
+        | (i64::from(time_vec[4])) << 32
+        | (i64::from(time_vec[3])) << 40
+        | (i64::from(time_vec[2])) << 48
+        | (i64::from(time_vec[1])) << 56;
+    let nsec = (i32::from(time_vec[12]))
+        | (i32::from(time_vec[11])) << 8
+        | (i32::from(time_vec[10])) << 16
+        | (i32::from(time_vec[9])) << 24;
+    let mut offset = i32::from(i16::from(time_vec[14]) | (i16::from(time_vec[13])) << 8) * 60;
     if version == 2 {
         offset += i32::from(time_vec[15] as i8);
     }
 
-    if offset == -1*60 {
+    if offset == -60 {
         let beginning_offset = INITIAL_TIMESTAMP.assume_utc();
         Ok(beginning_offset + Duration::seconds(sec) + Duration::nanoseconds(i64::from(nsec)))
     } else {
         let utcoffset = match UtcOffset::from_whole_seconds(offset) {
             Ok(offset) => offset,
-            Err(e) => return Err(e.into())
+            Err(e) => return Err(e.into()),
         };
         let beginning_offset = INITIAL_TIMESTAMP.assume_offset(utcoffset);
-        Ok(beginning_offset + Duration::seconds(sec + (offset as i64)) + Duration::nanoseconds(i64::from(nsec)))
+        Ok(beginning_offset
+            + Duration::seconds(sec + (offset as i64))
+            + Duration::nanoseconds(i64::from(nsec)))
     }
 }

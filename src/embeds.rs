@@ -1,6 +1,16 @@
+#![warn(clippy::pedantic, clippy::nursery)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    clippy::match_wild_err_arm,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
+
 use crossbeam_channel::{Receiver, Sender};
 use fancy_regex::Regex;
 use futures_util::{future, pin_mut, StreamExt};
+use lazy_static::lazy_static;
 use log::{debug, error, info};
 use reqwest::{get as ReqwestGet, Client as ReqwestClient};
 use rusqlite::{params, Connection};
@@ -24,7 +34,6 @@ use twitch_api2::helix::{
 };
 use twitch_oauth2::{AppAccessToken, ClientId, ClientSecret, TwitchToken};
 use url::{ParseError, Url};
-use lazy_static::lazy_static;
 
 use crate::util::{split_once, Message, TimeoutMsg};
 
@@ -69,13 +78,16 @@ async fn websocket_thread_func(
     'ioerrortracker: loop {
         if io_error_counter > 3 {
             let io_error_sleep = io_error_counter - 3;
-            debug!("Too many IO errors in a row ({}), sleeping before connecting", io_error_counter);
+            debug!(
+                "Too many IO errors in a row ({}), sleeping before connecting",
+                io_error_counter
+            );
             thread::sleep(Duration::from_secs(io_error_sleep));
         }
         let conn = Connection::open("./data/embeddb.db").unwrap();
 
         let ws = connect_async(Url::parse("wss://chat.destiny.gg/ws").unwrap());
-    
+
         let (socket, response) = match timeout(Duration::from_secs(10), ws).await {
             Ok(ws) => {
                 let (socket, response) = match ws {
@@ -96,18 +108,18 @@ async fn websocket_thread_func(
                 panic!("Connection timed out, restarting the thread: {}", e);
             }
         };
-    
+
         info!("Connected to the server");
         debug!("Response HTTP code: {}", response.status());
-    
+
         let (stdin_tx, stdin_rx) = futures_channel::mpsc::unbounded();
-    
+
         // lidl cache so as not too spam the apis too much
         // wrapping the hashmap in the arc mutex meme to share between threads
         let cache: Arc<Mutex<HashMap<String, CacheEntry>>> = Arc::new(Mutex::new(HashMap::new()));
         let cache_thread = cache.clone();
         let cache_main = cache.clone();
-    
+
         // clean the cache every minute
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(5));
@@ -122,14 +134,14 @@ async fn websocket_thread_func(
                         .unwrap()
             });
         });
-    
+
         let mut val_time: u64 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-    
+
         let (write, mut read) = socket.split();
-    
+
         // futures/websocket shenanigans
         // i think the next line assumes anything
         // that we send through the stdin_tx channel is Ok,
@@ -144,7 +156,7 @@ async fn websocket_thread_func(
                             io_error_counter = 0;
                         }
                         msg_og
-                    },
+                    }
                     Err(tokio_tungstenite::tungstenite::Error::Io(e)) => {
                         error!("Tungstenite IO error, restarting the loop: {}", e);
                         io_error_counter += 1;
@@ -213,7 +225,7 @@ async fn websocket_thread_func(
                                     parsed_link.path_segments().unwrap().collect();
                                 match parsed_link_frags.len() {
                                     0 => {}
-                                    _ => match parsed_link_frags.get(0).unwrap() {
+                                    _ => match parsed_link_frags.first().unwrap() {
                                         &"profile" | &"login" | &"logout" | &"beand" => {}
                                         _ => {
                                             capt_vector
@@ -256,14 +268,19 @@ async fn websocket_thread_func(
                                                 .build();
                                             let resp = twitch_client.req_get(req, &token).await;
                                             match resp {
-                                                Err(e) => {
-                                                    match e {
-                                                        ClientRequestError::RequestError(e) => {
-                                                            error!("{}", e);
-                                                        },
-                                                        ClientRequestError::HelixRequestGetError(a) => {
-                                                            if let HelixRequestGetError::Error {error: _, status, message: _, uri: _} = a {
-                                                                match status {
+                                                Err(e) => match e {
+                                                    ClientRequestError::RequestError(e) => {
+                                                        error!("{}", e);
+                                                    }
+                                                    ClientRequestError::HelixRequestGetError(a) => {
+                                                        if let HelixRequestGetError::Error {
+                                                            error: _,
+                                                            status,
+                                                            message: _,
+                                                            uri: _,
+                                                        } = a
+                                                        {
+                                                            match status {
                                                                     reqwest::StatusCode::TOO_MANY_REQUESTS => {
                                                                         error!("Twitch API 429 - Too Many Requests");
                                                                     },
@@ -272,22 +289,26 @@ async fn websocket_thread_func(
                                                                     },
                                                                     _ => {}
                                                                 }
-                                                            }
-                                                        },
-                                                        _ => panic!("{}", e)
+                                                        }
                                                     }
+                                                    _ => panic!("{}", e),
                                                 },
                                                 Ok(response) => {
                                                     if response.data.is_empty() {
                                                         continue 'captures;
                                                     }
-                                                    title = response.data.get(0).unwrap().title.clone();
-                                                    cache_main.lock().unwrap().insert(link.clone(), CacheEntry {
-                                                        timestamp: msg_des.timestamp,
-                                                        platform: <&str>::clone(&platform).to_string(),
-                                                        channel: channel.clone(),
-                                                        title: title.clone()
-                                                    });
+                                                    title =
+                                                        response.data.get(0).unwrap().title.clone();
+                                                    cache_main.lock().unwrap().insert(
+                                                        link.clone(),
+                                                        CacheEntry {
+                                                            timestamp: msg_des.timestamp,
+                                                            platform: <&str>::clone(&platform)
+                                                                .to_string(),
+                                                            channel: channel.clone(),
+                                                            title: title.clone(),
+                                                        },
+                                                    );
                                                 }
                                             }
                                         }
@@ -297,7 +318,7 @@ async fn websocket_thread_func(
                                             .id(vec![channel.clone().into()])
                                             .build();
                                         let resp = twitch_client.req_get(req, &token).await;
-                                        
+
                                         if cache_main.lock().unwrap().contains_key(&link) {
                                             title = cache_main
                                                 .lock()
@@ -308,16 +329,21 @@ async fn websocket_thread_func(
                                                 .clone();
                                         } else {
                                             match resp {
-                                                Err(e) => {
-                                                    match e {
-                                                        ClientRequestError::RequestError(e) => {
-                                                            if e.status().unwrap() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                                                Err(e) => match e {
+                                                    ClientRequestError::RequestError(e) => {
+                                                        if e.status().unwrap() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
                                                                 error!("Twitch API 503 - Service Unavailable");
                                                             }
-                                                        },
-                                                        ClientRequestError::HelixRequestGetError(a) => {
-                                                            if let HelixRequestGetError::Error {error: _, status, message: _, uri: _} = a {
-                                                                match status {
+                                                    }
+                                                    ClientRequestError::HelixRequestGetError(a) => {
+                                                        if let HelixRequestGetError::Error {
+                                                            error: _,
+                                                            status,
+                                                            message: _,
+                                                            uri: _,
+                                                        } = a
+                                                        {
+                                                            match status {
                                                                     reqwest::StatusCode::TOO_MANY_REQUESTS => {
                                                                         error!("Twitch API 429 - Too Many Requests");
                                                                     },
@@ -326,16 +352,16 @@ async fn websocket_thread_func(
                                                                     },
                                                                     _ => {}
                                                                 }
-                                                            }
-                                                        },
-                                                        _ => panic!("{}", e)
+                                                        }
                                                     }
+                                                    _ => panic!("{}", e),
                                                 },
                                                 Ok(response) => {
                                                     if response.data.is_empty() {
                                                         continue 'captures;
                                                     }
-                                                    title = response.data.get(0).unwrap().title.clone();
+                                                    title =
+                                                        response.data.get(0).unwrap().title.clone();
                                                 }
                                             }
                                         }
@@ -345,7 +371,7 @@ async fn websocket_thread_func(
                                             .id(vec![channel.clone()])
                                             .build();
                                         let resp = twitch_client.req_get(req, &token).await;
-                                        
+
                                         if cache_main.lock().unwrap().contains_key(&link) {
                                             title = cache_main
                                                 .lock()
@@ -356,16 +382,21 @@ async fn websocket_thread_func(
                                                 .clone();
                                         } else {
                                             match resp {
-                                                Err(e) => {
-                                                    match e {
-                                                        ClientRequestError::RequestError(e) => {
-                                                            if e.status().unwrap() == reqwest::StatusCode::SERVICE_UNAVAILABLE{
+                                                Err(e) => match e {
+                                                    ClientRequestError::RequestError(e) => {
+                                                        if e.status().unwrap() == reqwest::StatusCode::SERVICE_UNAVAILABLE{
                                                                 error!("Twitch API 503 - Service Unavailable");
                                                             }
-                                                        },
-                                                        ClientRequestError::HelixRequestGetError(a) => {
-                                                            if let HelixRequestGetError::Error {error: _, status, message: _, uri: _} = a {
-                                                                match status {
+                                                    }
+                                                    ClientRequestError::HelixRequestGetError(a) => {
+                                                        if let HelixRequestGetError::Error {
+                                                            error: _,
+                                                            status,
+                                                            message: _,
+                                                            uri: _,
+                                                        } = a
+                                                        {
+                                                            match status {
                                                                     reqwest::StatusCode::TOO_MANY_REQUESTS => {
                                                                         error!("Twitch API 429 - Too Many Requests");
                                                                     },
@@ -374,16 +405,16 @@ async fn websocket_thread_func(
                                                                     },
                                                                     _ => {}
                                                                 }
-                                                            }
-                                                        },
-                                                        _ => panic!("{}", e)
+                                                        }
                                                     }
+                                                    _ => panic!("{}", e),
                                                 },
                                                 Ok(response) => {
                                                     if response.data.is_empty() {
                                                         continue 'captures;
                                                     }
-                                                    title = response.data.get(0).unwrap().title.clone();
+                                                    title =
+                                                        response.data.get(0).unwrap().title.clone();
                                                 }
                                             }
                                         }
@@ -456,12 +487,12 @@ async fn websocket_thread_func(
                 }
                 if msg_og.is_close() {
                     error!("Server closed the connection, restarting the loop");
-                    continue 'ioerrortracker
+                    continue 'ioerrortracker;
                 }
             }
             read.into_future()
         };
-    
+
         pin_mut!(stdin_to_ws, ws_to_stdout);
         future::select(stdin_to_ws, ws_to_stdout).await;
     }
@@ -529,7 +560,7 @@ pub async fn main_loop(
         if cloned_ctrlc_inner_rx.try_recv().is_ok() {
             return;
         }
-        
+
         if ctrlc_outer_rx.try_recv().is_ok() {
             return;
         }
@@ -644,8 +675,9 @@ pub async fn main_loop(
         if timeout_thread.join().is_err() {
             match sleep_timer.load(Ordering::Acquire) {
                 0 => sleep_timer.store(1, Ordering::Release),
-                1..=32 => sleep_timer
-                    .store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release),
+                1..=32 => {
+                    sleep_timer.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release)
+                }
                 _ => {}
             }
             continue 'outer;
@@ -653,8 +685,9 @@ pub async fn main_loop(
         if ws_thread.join().is_err() {
             match sleep_timer.load(Ordering::Acquire) {
                 0 => sleep_timer.store(1, Ordering::Release),
-                1..=32 => sleep_timer
-                    .store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release),
+                1..=32 => {
+                    sleep_timer.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release)
+                }
                 _ => {}
             }
             continue 'outer;
@@ -662,8 +695,9 @@ pub async fn main_loop(
         if twitch_validation_thread.join().is_err() {
             match sleep_timer.load(Ordering::Acquire) {
                 0 => sleep_timer.store(1, Ordering::Release),
-                1..=32 => sleep_timer
-                    .store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release),
+                1..=32 => {
+                    sleep_timer.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release)
+                }
                 _ => {}
             }
             continue 'outer;

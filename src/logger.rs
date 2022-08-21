@@ -1,9 +1,19 @@
+#![warn(clippy::pedantic, clippy::nursery)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    clippy::match_wild_err_arm,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
+
 use crossbeam_channel::{Receiver, Sender};
+use fancy_regex::Regex;
 use futures_util::{future, pin_mut, StreamExt};
+use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use rusqlite::{params, Connection};
 use rust_decimal::prelude::{Decimal, ToPrimitive};
-use tonic::transport::Channel;
 use std::{
     fs,
     str::FromStr,
@@ -11,51 +21,51 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::{Duration},
+    time::Duration,
     {panic, thread},
 };
+use time::OffsetDateTime;
 use tokio::time::timeout;
 use tokio_postgres::{connect, NoTls};
 use tokio_tungstenite::{connect_async, tungstenite::Message::Pong};
+use tonic::transport::Channel;
 use url::Url;
-use fancy_regex::Regex;
-use lazy_static::lazy_static;
-use time::OffsetDateTime;
 
-use crate::util::{split_once, CommandType, JoinQuit, Message, MessageType, Names, TimeoutMsg};
-use grpc::status_client::StatusClient;
-use grpc::{Mutelinks, Nuke, Aegis};
+use crate::util::{
+    grpc::{status_client::StatusClient, Aegis, Mutelinks, Nuke},
+    split_once, CommandType, JoinQuit, Message, MessageType, Names, TimeoutMsg,
+};
 
 lazy_static! {
     static ref NUKE_REGEX: Regex = Regex::new(r"(\d+[HMDSWwhmds])?\s?(?:\/(.*)\/)?(.*)").unwrap();
-    static ref MUTELINKS_REGEX: Regex = Regex::new(r"(?P<state>on|off|all)(?:(?:\s+)(?P<time>\d+[HMDSWwhmds]))?").unwrap();
-}
-
-pub mod grpc {
-    tonic::include_proto!("grpc_timestamps");
+    static ref MUTELINKS_REGEX: Regex =
+        Regex::new(r"(?P<state>on|off|all)(?:(?:\s+)(?P<time>\d+[HMDSWwhmds]))?").unwrap();
 }
 
 #[tokio::main]
 async fn websocket_thread_func(
-    params: String,    
-	timer_tx: Sender<TimeoutMsg>,
+    params: String,
+    timer_tx: Sender<TimeoutMsg>,
     ctrlc_inner_rx: Receiver<()>,
     ctrlc_outer_tx: Sender<()>,
-    grpc_params: String
+    grpc_params: String,
 ) {
     let mut io_error_counter = 0;
 
     let mut grpc_client: Option<StatusClient<Channel>>;
-    if !grpc_params.is_empty() {
-        grpc_client = Some(StatusClient::connect(grpc_params).await.unwrap());
-    } else {
+    if grpc_params.is_empty() {
         grpc_client = None;
+    } else {
+        grpc_client = Some(StatusClient::connect(grpc_params).await.unwrap());
     }
 
     'ioerrortracker: loop {
         if io_error_counter > 3 {
             let io_error_sleep = io_error_counter - 3;
-            debug!("Too many IO errors in a row ({}), sleeping before connecting", io_error_counter);
+            debug!(
+                "Too many IO errors in a row ({}), sleeping before connecting",
+                io_error_counter
+            );
             thread::sleep(Duration::from_secs(io_error_sleep));
         }
         let mut sqlite_conn = Connection::open("./data/featdb.db").unwrap();
@@ -63,18 +73,18 @@ async fn websocket_thread_func(
         // since we can't move a pg connection from one thread to another easily
         // we just recreate it
         let (mut pg_conn, pg_conn2) = connect(params.as_str(), NoTls).await.unwrap();
-    
+
         let timer_tx_pg_error = timer_tx.clone();
-    
+
         tokio::spawn(async move {
             if let Err(e) = pg_conn2.await {
                 error!("Postgres connection error: {}", e);
                 timer_tx_pg_error.send(TimeoutMsg::Shutdown).unwrap();
             }
         });
-    
+
         let ws = connect_async(Url::parse("wss://chat.destiny.gg/ws").unwrap());
-    
+
         let (socket, response) = match timeout(Duration::from_secs(10), ws).await {
             Ok(ws) => {
                 let (socket, response) = match ws {
@@ -95,13 +105,13 @@ async fn websocket_thread_func(
                 panic!("Connection timed out, restarting the thread: {}", e);
             }
         };
-    
+
         info!("Connected to the server");
         debug!("Response HTTP code: {}", response.status());
-    
+
         let (stdin_tx, stdin_rx) = futures_channel::mpsc::unbounded();
         let (write, mut read) = socket.split();
-    
+
         let stdin_to_ws = stdin_rx.map(Ok).forward(write);
         let ws_to_stdout = {
             while let Some(msg) = read.next().await {
@@ -111,7 +121,7 @@ async fn websocket_thread_func(
                             io_error_counter = 0;
                         }
                         msg_og
-                    },
+                    }
                     Err(tokio_tungstenite::tungstenite::Error::Io(e)) => {
                         error!("Tungstenite IO error, restarting the loop: {}", e);
                         io_error_counter += 1;
@@ -172,7 +182,13 @@ async fn websocket_thread_func(
                                         "INSERT INTO logs (time, username, features, message) VALUES (TO_TIMESTAMP($1/1000.0), $2, $3, $4)", 
                                         &[&Decimal::new(msg_des.timestamp, 0), &msg_des.nick, &format!("{{{}}}", msg_des.features.join(",")), &msg_des.data],
                                     ).await.unwrap();
-                                trace!("Added a log to the 'logs' table - | [{}] {{f: {}}} {}: {} |", msg_des.timestamp, msg_des.features.len(), msg_des.nick, msg_des.data);
+                                trace!(
+                                    "Added a log to the 'logs' table - | [{}] {{f: {}}} {}: {} |",
+                                    msg_des.timestamp,
+                                    msg_des.features.len(),
+                                    msg_des.nick,
+                                    msg_des.data
+                                );
                                 if msg_des.features.contains(&"flair15".to_string()) {
                                     tr.execute(
                                         "INSERT INTO chatters (username, birthday) VALUES ($1, TO_TIMESTAMP($2/1000.0)) ON CONFLICT (username) DO UPDATE SET birthday = COALESCE(chatters.birthday, EXCLUDED.birthday)", 
@@ -200,33 +216,44 @@ async fn websocket_thread_func(
                                                 debug!("Added a nuke log to the 'nukes' table - | [{}] {{f: {}}} {}: {} |", msg_des.timestamp, msg_des.features.len(), msg_des.nick, msg_des.data);
                                                 match grpc_client.as_mut() {
                                                     Some(grpc_client) => {
-                                                        match NUKE_REGEX.captures(params) {
-                                                            Ok(matches) => {
-                                                                match matches {
-                                                                    Some(m) => {
-                                                                        let duration = m.get(1).map_or("10m".to_string(), |dur| dur.as_str().to_string());
-                                                                        let word = m.get(3).unwrap().as_str().to_string();
-                                                                        let stamp_secs = msg_des.timestamp / 1000;
-                                                                        let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
-                                                                        let stamp = prost_types::Timestamp {
-                                                                            seconds: stamp_secs,
-                                                                            nanos: stamp_micros,
-                                                                        };
-                                                                        let nuke_request = tonic::Request::new(Nuke {
-                                                                            time: Some(stamp.clone()),
-                                                                            r#type: t.to_string(),
-                                                                            duration: duration.clone(),
-                                                                            word: word.clone(),
-                                                                        });
-                                                                        debug!("Sending a gRPC nuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word, duration);
-                                                                        grpc_client.receive_nuke(nuke_request).await.unwrap();
-                                                                    },
-                                                                    None => ()
-                                                                }
-                                                            },
-                                                            Err(_) => ()
+                                                        if let Ok(Some(m)) =
+                                                            NUKE_REGEX.captures(params)
+                                                        {
+                                                            let duration = m
+                                                                .get(1)
+                                                                .map_or("10m".to_string(), |dur| {
+                                                                    dur.as_str().to_string()
+                                                                });
+                                                            let word = m
+                                                                .get(3)
+                                                                .unwrap()
+                                                                .as_str()
+                                                                .to_string();
+                                                            let stamp_secs =
+                                                                msg_des.timestamp / 1000;
+                                                            let stamp_micros =
+                                                                ((msg_des.timestamp % 1000)
+                                                                    * 1_000_000)
+                                                                    .to_i32()
+                                                                    .unwrap();
+                                                            let stamp = prost_types::Timestamp {
+                                                                seconds: stamp_secs,
+                                                                nanos: stamp_micros,
+                                                            };
+                                                            let nuke_request =
+                                                                tonic::Request::new(Nuke {
+                                                                    time: Some(stamp.clone()),
+                                                                    r#type: t.to_string(),
+                                                                    duration: duration.clone(),
+                                                                    word: word.clone(),
+                                                                });
+                                                            debug!("Sending a gRPC nuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word, duration);
+                                                            grpc_client
+                                                                .receive_nuke(nuke_request)
+                                                                .await
+                                                                .unwrap();
                                                         }
-                                                    },
+                                                    }
                                                     None => (),
                                                 }
                                             }
@@ -238,33 +265,44 @@ async fn websocket_thread_func(
                                                 debug!("Added a meganuke log to the 'nukes' table - | [{}] {{f: {}}} {}: {} |", msg_des.timestamp, msg_des.features.len(), msg_des.nick, msg_des.data);
                                                 match grpc_client.as_mut() {
                                                     Some(grpc_client) => {
-                                                        match NUKE_REGEX.captures(params) {
-                                                            Ok(matches) => {
-                                                                match matches {
-                                                                    Some(m) => {
-                                                                        let duration = m.get(1).map_or("10m".to_string(), |dur| dur.as_str().to_string());
-                                                                        let word = m.get(3).unwrap().as_str().to_string();
-                                                                        let stamp_secs = msg_des.timestamp / 1000;
-                                                                        let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
-                                                                        let stamp = prost_types::Timestamp {
-                                                                            seconds: stamp_secs,
-                                                                            nanos: stamp_micros,
-                                                                        };
-                                                                        let nuke_request = tonic::Request::new(Nuke {
-                                                                            time: Some(stamp.clone()),
-                                                                            r#type: t.to_string(),
-                                                                            duration: duration.clone(),
-                                                                            word: word.clone(),
-                                                                        });
-                                                                        debug!("Sending a gRPC meganuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word, duration);
-                                                                        grpc_client.receive_nuke(nuke_request).await.unwrap();
-                                                                    },
-                                                                    None => ()
-                                                                }
-                                                            },
-                                                            Err(_) => ()
+                                                        if let Ok(Some(m)) =
+                                                            NUKE_REGEX.captures(params)
+                                                        {
+                                                            let duration = m
+                                                                .get(1)
+                                                                .map_or("10m".to_string(), |dur| {
+                                                                    dur.as_str().to_string()
+                                                                });
+                                                            let word = m
+                                                                .get(3)
+                                                                .unwrap()
+                                                                .as_str()
+                                                                .to_string();
+                                                            let stamp_secs =
+                                                                msg_des.timestamp / 1000;
+                                                            let stamp_micros =
+                                                                ((msg_des.timestamp % 1000)
+                                                                    * 1_000_000)
+                                                                    .to_i32()
+                                                                    .unwrap();
+                                                            let stamp = prost_types::Timestamp {
+                                                                seconds: stamp_secs,
+                                                                nanos: stamp_micros,
+                                                            };
+                                                            let nuke_request =
+                                                                tonic::Request::new(Nuke {
+                                                                    time: Some(stamp.clone()),
+                                                                    r#type: t.to_string(),
+                                                                    duration: duration.clone(),
+                                                                    word: word.clone(),
+                                                                });
+                                                            debug!("Sending a gRPC meganuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word, duration);
+                                                            grpc_client
+                                                                .receive_nuke(nuke_request)
+                                                                .await
+                                                                .unwrap();
                                                         }
-                                                    },
+                                                    }
                                                     None => (),
                                                 }
                                             }
@@ -276,26 +314,39 @@ async fn websocket_thread_func(
                                                 debug!("Added an aegis log to the 'nukes' table - | [{}] {{f: {}}} {}: {} |", msg_des.timestamp, msg_des.features.len(), msg_des.nick, msg_des.data);
                                                 match grpc_client.as_mut() {
                                                     Some(grpc_client) => {
-                                                        if params.len() != 0 {
-                                                            let stamp_secs = msg_des.timestamp / 1000;
-                                                            let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
+                                                        if !params.is_empty() {
+                                                            let stamp_secs =
+                                                                msg_des.timestamp / 1000;
+                                                            let stamp_micros =
+                                                                ((msg_des.timestamp % 1000)
+                                                                    * 1_000_000)
+                                                                    .to_i32()
+                                                                    .unwrap();
                                                             let stamp = prost_types::Timestamp {
                                                                 seconds: stamp_secs,
                                                                 nanos: stamp_micros,
                                                             };
-                                                            let grpc_type = if t == CommandType::Aegis {0} else {1}; 
-                                                            let aegis_request = tonic::Request::new(Aegis {
-                                                                time: Some(stamp.clone()),
-                                                                r#type: grpc_type,
-                                                                word: params.to_string(),
-                                                            });
+                                                            let grpc_type =
+                                                                if t == CommandType::Aegis {
+                                                                    0
+                                                                } else {
+                                                                    1
+                                                                };
+                                                            let aegis_request =
+                                                                tonic::Request::new(Aegis {
+                                                                    time: Some(stamp.clone()),
+                                                                    r#type: grpc_type,
+                                                                    word: params.to_string(),
+                                                                });
                                                             debug!("Sending a gRPC aegis/aegissingle event to the API server - | [{}] {} - {} |", stamp, t.to_string(), params);
-                                                            grpc_client.receive_aegis(aegis_request).await.unwrap();
+                                                            grpc_client
+                                                                .receive_aegis(aegis_request)
+                                                                .await
+                                                                .unwrap();
                                                         }
-                                                    },
+                                                    }
                                                     None => (),
                                                 }
-                                                
                                             }
                                             CommandType::Mutelinks => {
                                                 tr.execute(
@@ -305,33 +356,46 @@ async fn websocket_thread_func(
                                                 debug!("Added a mutelinks log to the 'mutelinks' table - | [{}] {{f: {}}} {}: {} |", msg_des.timestamp, msg_des.features.len(), msg_des.nick, msg_des.data);
                                                 match grpc_client.as_mut() {
                                                     Some(grpc_client) => {
-                                                        match MUTELINKS_REGEX.captures(params) {
-                                                            Ok(matches) => {
-                                                                match matches {
-                                                                    Some(m) => {
-                                                                        let duration = m.name("time").map_or("10m".to_string(), |dur| dur.as_str().to_string());
-                                                                        let status = m.name("state").unwrap().as_str().to_string();
-                                                                        let stamp_secs = msg_des.timestamp / 1000;
-                                                                        let stamp_micros = ((msg_des.timestamp % 1000) * 1_000_000).to_i32().unwrap();
-                                                                        let stamp = prost_types::Timestamp {
-                                                                            seconds: stamp_secs,
-                                                                            nanos: stamp_micros,
-                                                                        };
-                                                                        let mutelinks_request = tonic::Request::new(Mutelinks {
-                                                                            time: Some(stamp.clone()),
-                                                                            status: status.clone(),
-                                                                            duration: duration.clone(),
-                                                                            user: msg_des.nick.clone(),
-                                                                        });
-                                                                        debug!("Sending a gRPC mutelinks event to the API server - | [{}] {}: {} - {} |", stamp, msg_des.nick.clone(), status, duration);
-                                                                        grpc_client.receive_mutelinks(mutelinks_request).await.unwrap();
-                                                                    },
-                                                                    None => ()
-                                                                }
-                                                            },
-                                                            Err(_) => ()
+                                                        if let Ok(Some(m)) =
+                                                            MUTELINKS_REGEX.captures(params)
+                                                        {
+                                                            let duration = m
+                                                                .name("time")
+                                                                .map_or("10m".to_string(), |dur| {
+                                                                    dur.as_str().to_string()
+                                                                });
+                                                            let status = m
+                                                                .name("state")
+                                                                .unwrap()
+                                                                .as_str()
+                                                                .to_string();
+                                                            let stamp_secs =
+                                                                msg_des.timestamp / 1000;
+                                                            let stamp_micros =
+                                                                ((msg_des.timestamp % 1000)
+                                                                    * 1_000_000)
+                                                                    .to_i32()
+                                                                    .unwrap();
+                                                            let stamp = prost_types::Timestamp {
+                                                                seconds: stamp_secs,
+                                                                nanos: stamp_micros,
+                                                            };
+                                                            let mutelinks_request =
+                                                                tonic::Request::new(Mutelinks {
+                                                                    time: Some(stamp.clone()),
+                                                                    status: status.clone(),
+                                                                    duration: duration.clone(),
+                                                                    user: msg_des.nick.clone(),
+                                                                });
+                                                            debug!("Sending a gRPC mutelinks event to the API server - | [{}] {}: {} - {} |", stamp, msg_des.nick.clone(), status, duration);
+                                                            grpc_client
+                                                                .receive_mutelinks(
+                                                                    mutelinks_request,
+                                                                )
+                                                                .await
+                                                                .unwrap();
                                                         }
-                                                    },
+                                                    }
                                                     None => (),
                                                 }
                                             }
@@ -366,7 +430,8 @@ async fn websocket_thread_func(
                                     .unwrap();
                             }
                             MessageType::Join => {
-                                let joinquit_des: JoinQuit = serde_json::from_str(msg_data).unwrap();
+                                let joinquit_des: JoinQuit =
+                                    serde_json::from_str(msg_data).unwrap();
                                 sqlite_conn
                                     .execute(
                                         "REPLACE INTO dggfeat (username, features) VALUES (?, ?)",
@@ -386,9 +451,10 @@ async fn websocket_thread_func(
                                         &[&joinquit_des.nick, &Decimal::new(joinquit_des.timestamp, 0)],
                                     ).await.unwrap();
                                 }
-                            },
+                            }
                             MessageType::Quit => {
-                                let joinquit_des: JoinQuit = serde_json::from_str(msg_data).unwrap();
+                                let joinquit_des: JoinQuit =
+                                    serde_json::from_str(msg_data).unwrap();
                                 sqlite_conn
                                     .execute(
                                         "REPLACE INTO dggfeat (username, features) VALUES (?, ?)",
@@ -408,7 +474,7 @@ async fn websocket_thread_func(
                                         &[&joinquit_des.nick, &Decimal::new(joinquit_des.timestamp, 0)],
                                     ).await.unwrap();
                                 }
-                            },
+                            }
                             _ => (),
                         }
                     }
@@ -419,12 +485,12 @@ async fn websocket_thread_func(
                 }
                 if msg_og.is_close() {
                     error!("Server closed the connection, restarting the loop");
-                    continue 'ioerrortracker
+                    continue 'ioerrortracker;
                 }
             }
             read.into_future()
         };
-    
+
         pin_mut!(stdin_to_ws, ws_to_stdout);
         future::select(stdin_to_ws, ws_to_stdout).await;
     }
@@ -445,15 +511,21 @@ pub async fn main_loop(params: String, grpc_params: String, ctrlc_inner: Receive
     let sqlite_conn = Connection::open("./data/featdb.db").unwrap();
 
     sqlite_conn
-        .execute("CREATE TABLE IF NOT EXISTS dggfeat (username text, features text)", [])
+        .execute(
+            "CREATE TABLE IF NOT EXISTS dggfeat (username text, features text)",
+            [],
+        )
         .unwrap();
     sqlite_conn
-        .execute("CREATE UNIQUE INDEX IF NOT EXISTS usernames ON dggfeat(username)", [])
+        .execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS usernames ON dggfeat(username)",
+            [],
+        )
         .unwrap();
 
     sqlite_conn.close().unwrap();
 
-	let (pg_conn, pg_conn2) = connect(params.as_str(), NoTls).await.unwrap();
+    let (pg_conn, pg_conn2) = connect(params.as_str(), NoTls).await.unwrap();
 
     let handle = tokio::spawn(async move {
         if let Err(e) = pg_conn2.await {
@@ -468,7 +540,7 @@ pub async fn main_loop(params: String, grpc_params: String, ctrlc_inner: Receive
         )
         .await
         .unwrap();
-	let bool_check: bool = check.get(0);
+    let bool_check: bool = check.get(0);
     if !bool_check {
         pg_conn.batch_execute(
 			"
@@ -509,7 +581,7 @@ pub async fn main_loop(params: String, grpc_params: String, ctrlc_inner: Receive
         let sleep_timer_inner = Arc::clone(&sleep_timer);
         let params = params.clone();
         let grpc_params = grpc_params.clone();
-        
+
         // timeout channels
         let (timer_tx, timer_rx): (Sender<TimeoutMsg>, Receiver<TimeoutMsg>) =
             crossbeam_channel::unbounded();
@@ -554,35 +626,37 @@ pub async fn main_loop(params: String, grpc_params: String, ctrlc_inner: Receive
 
         // the main websocket thread that does all the hard work
         let ws_thread = thread::Builder::new()
-		.name("loggerino::logger::websocket_thread".to_string())
-		.spawn(move || {
-			websocket_thread_func(
-				params,
-				timer_tx,
-				ctrlc_inner_rx,
-				cloned_ctrlc_outer_tx_ws,
-                grpc_params
-			);
-		})
-		.unwrap();
+            .name("loggerino::logger::websocket_thread".to_string())
+            .spawn(move || {
+                websocket_thread_func(
+                    params,
+                    timer_tx,
+                    ctrlc_inner_rx,
+                    cloned_ctrlc_outer_tx_ws,
+                    grpc_params,
+                );
+            })
+            .unwrap();
 
         if timeout_thread.join().is_err() {
             match sleep_timer.load(Ordering::Acquire) {
-				0 => sleep_timer.store(1, Ordering::Release),
-				1..=32 => sleep_timer
-					.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release),
-				_ => {}
-			}
-			continue 'outer;
+                0 => sleep_timer.store(1, Ordering::Release),
+                1..=32 => {
+                    sleep_timer.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release)
+                }
+                _ => {}
+            }
+            continue 'outer;
         }
         if ws_thread.join().is_err() {
             match sleep_timer.load(Ordering::Acquire) {
-				0 => sleep_timer.store(1, Ordering::Release),
-				1..=32 => sleep_timer
-					.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release),
-				_ => {}
-			}
-			continue 'outer;
+                0 => sleep_timer.store(1, Ordering::Release),
+                1..=32 => {
+                    sleep_timer.store(sleep_timer.load(Ordering::Acquire) * 2, Ordering::Release)
+                }
+                _ => {}
+            }
+            continue 'outer;
         }
     }
 }
