@@ -314,36 +314,38 @@ async fn websocket_thread_func(
                                                 debug!("Added an aegis log to the 'nukes' table - | [{}] {{f: {}}} {}: {} |", msg_des.timestamp, msg_des.features.len(), msg_des.nick, msg_des.data);
                                                 match grpc_client.as_mut() {
                                                     Some(grpc_client) => {
-                                                        if !params.is_empty() {
-                                                            let stamp_secs =
-                                                                msg_des.timestamp / 1000;
-                                                            let stamp_micros =
-                                                                ((msg_des.timestamp % 1000)
-                                                                    * 1_000_000)
-                                                                    .to_i32()
-                                                                    .unwrap();
-                                                            let stamp = prost_types::Timestamp {
-                                                                seconds: stamp_secs,
-                                                                nanos: stamp_micros,
-                                                            };
-                                                            let grpc_type =
-                                                                if t == CommandType::Aegis {
-                                                                    0
-                                                                } else {
-                                                                    1
-                                                                };
-                                                            let aegis_request =
-                                                                tonic::Request::new(Aegis {
-                                                                    time: Some(stamp.clone()),
-                                                                    r#type: grpc_type,
-                                                                    word: params.to_string(),
-                                                                });
-                                                            debug!("Sending a gRPC aegis/aegissingle event to the API server - | [{}] {} - {} |", stamp, t.to_string(), params);
-                                                            grpc_client
-                                                                .receive_aegis(aegis_request)
-                                                                .await
+                                                        let stamp_secs =
+                                                            msg_des.timestamp / 1000;
+                                                        let stamp_micros =
+                                                            ((msg_des.timestamp % 1000)
+                                                                * 1_000_000)
+                                                                .to_i32()
                                                                 .unwrap();
+                                                        let stamp = prost_types::Timestamp {
+                                                            seconds: stamp_secs,
+                                                            nanos: stamp_micros,
+                                                        };
+                                                        let grpc_type =
+                                                            if t == CommandType::Aegis {
+                                                                0
+                                                            } else {
+                                                                1
+                                                            };
+                                                        let aegis_request =
+                                                            tonic::Request::new(Aegis {
+                                                                time: Some(stamp.clone()),
+                                                                r#type: grpc_type,
+                                                                word: params.to_string(),
+                                                            });
+                                                        if params.is_empty() {
+                                                            debug!("Sending a gRPC aegis event to the API server - | [{}] {} |", stamp, t.to_string());
+                                                        } else {
+                                                            debug!("Sending a gRPC aegissingle event to the API server - | [{}] {} - {} |", stamp, t.to_string(), params);
                                                         }
+                                                        grpc_client
+                                                            .receive_aegis(aegis_request)
+                                                            .await
+                                                            .unwrap();
                                                     }
                                                     None => (),
                                                 }
