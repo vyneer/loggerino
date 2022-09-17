@@ -206,7 +206,7 @@ async fn websocket_thread_func(
                                             capt.get(2).map_or("", |m| m.as_str()).to_lowercase();
                                         let mut duration = capt.get(1).map_or("", |m| m.as_str());
                                         if duration.is_empty() {
-                                            duration = "10m";
+                                            duration = "30m";
                                         }
                                         conn.execute(
                                             "INSERT INTO phrases (time, username, phrase, duration, type) VALUES (TO_TIMESTAMP($1/1000.0), $2, $3, $4, $5)", 
