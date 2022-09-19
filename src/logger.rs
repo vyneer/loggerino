@@ -201,9 +201,8 @@ async fn websocket_thread_func(
                                 ).await.unwrap();
 
                                 let lc_data = msg_des.data.to_lowercase();
-                                if lc_data.contains(char::is_whitespace)
-                                    && (msg_des.features.contains(&"admin".to_string())
-                                        || msg_des.features.contains(&"moderator".to_string()))
+                                if msg_des.features.contains(&"admin".to_string())
+                                    || msg_des.features.contains(&"moderator".to_string())
                                 {
                                     let (command, params) = split_once(lc_data.as_str());
                                     if let Ok(t) = CommandType::from_str(command) {
