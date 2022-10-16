@@ -230,7 +230,7 @@ async fn websocket_thread_func(
                                                                 });
                                                             let regex = m.get(2);
                                                             let word_to_mute = match regex {
-                                                                Some(r) => r.as_str().to_string(),
+                                                                Some(r) => format!("/{}/", r.as_str().to_string()),
                                                                 None => word,
                                                             };
                                                             let stamp_secs =
@@ -284,7 +284,7 @@ async fn websocket_thread_func(
                                                                 });
                                                             let regex = m.get(2);
                                                             let word_to_mute = match regex {
-                                                                Some(r) => r.as_str().to_string(),
+                                                                Some(r) => format!("/{}/", r.as_str().to_string()),
                                                                 None => word,
                                                             };
                                                             let stamp_secs =
