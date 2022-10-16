@@ -165,7 +165,7 @@ pub fn rem_first_and_last(value: &str) -> &str {
 pub fn split_once(in_string: &str) -> (&str, &str) {
     let (first, second) = match in_string.split_once(' ') {
         Some(r) => r,
-        None => (in_string, "")
+        None => (in_string, ""),
     };
 
     (first, second)

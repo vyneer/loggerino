@@ -225,9 +225,14 @@ async fn websocket_thread_func(
                                                                 });
                                                             let word = m
                                                                 .get(3)
-                                                                .unwrap()
-                                                                .as_str()
-                                                                .to_string();
+                                                                .map_or("".to_string(), |w| {
+                                                                    w.as_str().to_string()
+                                                                });
+                                                            let regex = m.get(2);
+                                                            let word_to_mute = match regex {
+                                                                Some(r) => r.as_str().to_string(),
+                                                                None => word,
+                                                            };
                                                             let stamp_secs =
                                                                 msg_des.timestamp / 1000;
                                                             let stamp_micros =
@@ -244,9 +249,9 @@ async fn websocket_thread_func(
                                                                     time: Some(stamp.clone()),
                                                                     r#type: t.to_string(),
                                                                     duration: duration.clone(),
-                                                                    word: word.clone(),
+                                                                    word: word_to_mute.clone(),
                                                                 });
-                                                            debug!("Sending a gRPC nuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word, duration);
+                                                            debug!("Sending a gRPC nuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word_to_mute, duration);
                                                             grpc_client
                                                                 .receive_nuke(nuke_request)
                                                                 .await
@@ -274,9 +279,14 @@ async fn websocket_thread_func(
                                                                 });
                                                             let word = m
                                                                 .get(3)
-                                                                .unwrap()
-                                                                .as_str()
-                                                                .to_string();
+                                                                .map_or("".to_string(), |w| {
+                                                                    w.as_str().to_string()
+                                                                });
+                                                            let regex = m.get(2);
+                                                            let word_to_mute = match regex {
+                                                                Some(r) => r.as_str().to_string(),
+                                                                None => word,
+                                                            };
                                                             let stamp_secs =
                                                                 msg_des.timestamp / 1000;
                                                             let stamp_micros =
@@ -293,9 +303,9 @@ async fn websocket_thread_func(
                                                                     time: Some(stamp.clone()),
                                                                     r#type: t.to_string(),
                                                                     duration: duration.clone(),
-                                                                    word: word.clone(),
+                                                                    word: word_to_mute.clone(),
                                                                 });
-                                                            debug!("Sending a gRPC meganuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word, duration);
+                                                            debug!("Sending a gRPC meganuke event to the API server - | [{}] {} - {} - {} |", stamp, t.to_string(), word_to_mute, duration);
                                                             grpc_client
                                                                 .receive_nuke(nuke_request)
                                                                 .await
@@ -313,23 +323,21 @@ async fn websocket_thread_func(
                                                 debug!("Added an aegis log to the 'nukes' table - | [{}] {{f: {}}} {}: {} |", msg_des.timestamp, msg_des.features.len(), msg_des.nick, msg_des.data);
                                                 match grpc_client.as_mut() {
                                                     Some(grpc_client) => {
-                                                        let stamp_secs =
-                                                            msg_des.timestamp / 1000;
-                                                        let stamp_micros =
-                                                            ((msg_des.timestamp % 1000)
-                                                                * 1_000_000)
-                                                                .to_i32()
-                                                                .unwrap();
+                                                        let stamp_secs = msg_des.timestamp / 1000;
+                                                        let stamp_micros = ((msg_des.timestamp
+                                                            % 1000)
+                                                            * 1_000_000)
+                                                            .to_i32()
+                                                            .unwrap();
                                                         let stamp = prost_types::Timestamp {
                                                             seconds: stamp_secs,
                                                             nanos: stamp_micros,
                                                         };
-                                                        let grpc_type =
-                                                            if t == CommandType::Aegis {
-                                                                0
-                                                            } else {
-                                                                1
-                                                            };
+                                                        let grpc_type = if t == CommandType::Aegis {
+                                                            0
+                                                        } else {
+                                                            1
+                                                        };
                                                         let aegis_request =
                                                             tonic::Request::new(Aegis {
                                                                 time: Some(stamp.clone()),
