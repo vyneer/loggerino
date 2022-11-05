@@ -570,13 +570,24 @@ pub async fn main_loop(
         }
 
         let sleep_timer_inner = Arc::clone(&sleep_timer);
-        let client_id = client_id.clone();
-        let secret = secret.clone();
         if refresh_bool.load(Ordering::Relaxed) {
             sleep_timer.store(0, Ordering::Release);
-            token = AppAccessToken::get_app_access_token(&twitch_client, client_id, secret, vec![])
-                .await
-                .unwrap();
+            let mut timer = 0;
+            loop {
+                let client_id = client_id.clone();
+                let secret = secret.clone();
+                match AppAccessToken::get_app_access_token(&twitch_client, client_id, secret, vec![]).await {
+                    Ok(t) => {
+                        token = t;
+                        break;
+                    },
+                    Err(e) => {
+                        error!("Couldn't get the app access token from Twitch: {}", e);
+                        timer += 1;
+                        thread::sleep(Duration::from_secs(timer));
+                    }
+                };
+            }
             refresh_bool.store(false, Ordering::Relaxed);
         }
         let refresh_bool_clone = Arc::clone(&refresh_bool);
