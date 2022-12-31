@@ -38,7 +38,7 @@ use url::{ParseError, Url};
 use crate::util::{split_once, Message, TimeoutMsg};
 
 lazy_static! {
-    static ref EMBED_REGEX: Regex = Regex::new(r"(^|\s)((#twitch|#twitch-vod|#twitch-clip|#youtube|(?:https://|http://|)strims\.gg(?:/angelthump|/facebook|/smashcast|/twitch-vod|/twitch|/ustream|/youtube-playlist|/youtube)?)/([A-z0-9_\-]{3,64}))\b").unwrap();
+    static ref EMBED_REGEX: Regex = Regex::new(r"(^|\s)((#twitch|#twitch-vod|#twitch-clip|#youtube|#rumble|(?:https://|http://|)strims\.gg(?:/angelthump|/facebook|/smashcast|/twitch-vod|/twitch|/ustream|/youtube-playlist|/youtube)?)/([A-z0-9_\-]{3,64}))\b").unwrap();
 }
 
 #[derive(Deserialize)]
