@@ -226,7 +226,7 @@ async fn websocket_thread_func(
                                 match parsed_link_frags.len() {
                                     0 => {}
                                     _ => match parsed_link_frags.first().unwrap() {
-                                        &"profile" | &"login" | &"logout" | &"beand" => {}
+                                        &"profile" | &"login" | &"logout" | &"beand" | &"m3u8" => {}
                                         _ => {
                                             capt_vector
                                                 .push(format!("strims.gg{}", parsed_link_path));
