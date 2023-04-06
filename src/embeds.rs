@@ -576,11 +576,18 @@ pub async fn main_loop(
             loop {
                 let client_id = client_id.clone();
                 let secret = secret.clone();
-                match AppAccessToken::get_app_access_token(&twitch_client, client_id, secret, vec![]).await {
+                match AppAccessToken::get_app_access_token(
+                    &twitch_client,
+                    client_id,
+                    secret,
+                    vec![],
+                )
+                .await
+                {
                     Ok(t) => {
                         token = t;
                         break;
-                    },
+                    }
                     Err(e) => {
                         error!("Couldn't get the app access token from Twitch: {}", e);
                         timer += 1;

@@ -356,16 +356,20 @@ async fn websocket_thread_func(
                                     // if phrase is a regex, dont treat it like a regular phrase
                                     if f.starts_with('/') && f.ends_with('/') {
                                         // if regex matches lowercase data, add it to the vector
-                                        if Regex::new(rem_first_and_last(
+                                        match Regex::new(rem_first_and_last(
                                             &f.replace("\\/", "/").replace("\\\\", "\\"),
-                                        ))
-                                        .unwrap()
-                                        .is_match(&lc_data)
-                                        .unwrap()
-                                        {
-                                            Some(f)
-                                        } else {
-                                            None
+                                        )) {
+                                            Ok(reg) => match reg.is_match(&lc_data) {
+                                                Ok(matches) => {
+                                                    if matches {
+                                                        Some(f)
+                                                    } else {
+                                                        None
+                                                    }
+                                                }
+                                                Err(_) => None,
+                                            },
+                                            Err(_) => None,
                                         }
                                     // if regular phrase
                                     } else {
