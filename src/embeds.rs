@@ -245,7 +245,7 @@ async fn websocket_thread_func(
                             capt_vector.dedup();
                             'captures: for result in capt_vector {
                                 for ele in &be_vec {
-                                    if result.contains(ele) {
+                                    if result.to_lowercase().contains(ele) {
                                         continue 'captures;
                                     }
                                 }
