@@ -16,6 +16,8 @@ use reqwest::{get as ReqwestGet, Client as ReqwestClient};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use std::{
+    fs::File,
+    io::{prelude::*, BufReader},
     collections::HashMap,
     convert::TryInto,
     fs, panic,
@@ -42,7 +44,7 @@ lazy_static! {
 }
 
 #[derive(Deserialize)]
-struct YoutubeOEmbed {
+struct OEmbedResponse {
     title: String,
     author_name: String,
 }
@@ -61,7 +63,8 @@ pub enum WebsocketThreadError {
     RefreshToken,
 }
 
-const OEMBED_URL: &str = "https://www.youtube.com/oembed";
+const OEMBED_URL_YOUTUBE: &str = "https://www.youtube.com/oembed";
+const OEMBED_URL_RUMBLE: &str = "https://rumble.com/api/Media/oembed";
 
 #[tokio::main]
 async fn websocket_thread_func(
@@ -72,6 +75,7 @@ async fn websocket_thread_func(
     ctrlc_inner_rx: Receiver<()>,
     ctrlc_outer_tx: Sender<()>,
     ctrlc_validation_tx: Sender<()>,
+    be_vec: Vec<String>,
 ) {
     let mut io_error_counter = 0;
 
@@ -240,6 +244,11 @@ async fn websocket_thread_func(
                         if !capt_vector.is_empty() {
                             capt_vector.dedup();
                             'captures: for result in capt_vector {
+                                for ele in &be_vec {
+                                    if result.contains(ele) {
+                                        continue 'captures;
+                                    }
+                                }
                                 let mut link = result.clone();
                                 let (platform, channel) = result.split_once('/').unwrap();
                                 let platform = if platform.contains("strims.gg") {
@@ -430,7 +439,7 @@ async fn websocket_thread_func(
                                                 .clone();
                                         } else {
                                             let oembed_url = Url::parse_with_params(
-                                                OEMBED_URL,
+                                                OEMBED_URL_YOUTUBE,
                                                 &[
                                                     (
                                                         "url",
@@ -444,7 +453,57 @@ async fn websocket_thread_func(
                                                 Ok(resp) => {
                                                     if resp.status() == 200 {
                                                         let oembed_data = resp
-                                                            .json::<YoutubeOEmbed>()
+                                                            .json::<OEmbedResponse>()
+                                                            .await
+                                                            .unwrap();
+                                                        channel = oembed_data.author_name.clone();
+                                                        title = oembed_data.title.clone();
+                                                        cache_main.lock().unwrap().insert(
+                                                            link.clone(),
+                                                            CacheEntry {
+                                                                timestamp: msg_des.timestamp,
+                                                                platform: <&str>::clone(&platform)
+                                                                    .to_string(),
+                                                                channel: channel.clone(),
+                                                                title: title.clone(),
+                                                            },
+                                                        );
+                                                    } else {
+                                                        continue 'captures;
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error!("{}", e);
+                                                }
+                                            };
+                                        }
+                                    }
+                                    "rumble" => {
+                                        if cache_main.lock().unwrap().contains_key(&link) {
+                                            title = cache_main
+                                                .lock()
+                                                .unwrap()
+                                                .get(&link)
+                                                .unwrap()
+                                                .title
+                                                .clone();
+                                        } else {
+                                            let oembed_url = Url::parse_with_params(
+                                                OEMBED_URL_RUMBLE,
+                                                &[
+                                                    (
+                                                        "url",
+                                                        format!("https://rumble.com/embed/{}", channel),
+                                                    ),
+                                                    ("format", "json".to_string()),
+                                                ],
+                                            )
+                                            .unwrap();
+                                            match ReqwestGet(oembed_url.as_str()).await {
+                                                Ok(resp) => {
+                                                    if resp.status() == 200 {
+                                                        let oembed_data = resp
+                                                            .json::<OEmbedResponse>()
                                                             .await
                                                             .unwrap();
                                                         channel = oembed_data.author_name.clone();
@@ -551,11 +610,27 @@ pub async fn main_loop(
     let (ctrlc_outer_tx, ctrlc_outer_rx): (Sender<()>, Receiver<()>) =
         crossbeam_channel::unbounded();
 
+    // ignore the embeds from banned_embeds.txt
+    let be_vec = match File::open("banned_embeds.txt") {
+        Ok(file) => {
+            BufReader::new(file)
+                .lines()
+                .map(|l| l.expect("Could not parse line"))
+                .map(|s| s.to_lowercase())
+                .collect::<Vec<String>>()
+            }
+        Err(e) => {
+            error!("No banned_embeds.txt file found, skipping the step - {}", e);
+            vec![]
+        }
+    };
+
     'outer: loop {
         let (ctrlc_validation_tx, ctrlc_validation_rx): (Sender<()>, Receiver<()>) =
             crossbeam_channel::unbounded();
         let cloned_ctrlc_outer_tx_ws = ctrlc_outer_tx.clone();
         let cloned_ctrlc_inner_rx = ctrlc_inner.clone();
+        let be_vec = be_vec.clone();
 
         if cloned_ctrlc_inner_rx.try_recv().is_ok() {
             return;
@@ -686,6 +761,7 @@ pub async fn main_loop(
                     ctrlc_inner_rx,
                     cloned_ctrlc_outer_tx_ws,
                     ctrlc_validation_tx,
+                    be_vec,
                 );
             })
             .unwrap();
