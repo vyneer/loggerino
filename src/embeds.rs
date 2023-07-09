@@ -528,6 +528,9 @@ async fn websocket_thread_func(
                                             };
                                         }
                                     }
+                                    "kick" => {
+                                        link = link.to_lowercase();
+                                    }
                                     _ => {}
                                 }
                                 conn.execute(
